@@ -1,7 +1,7 @@
 # ============================================================
 # src/url_pipeline.py
 # PSUDPS — Phishing Short URL Detection & Prevention System
-# Complete pipeline with all fixes applied
+# Complete pipeline — with WHOIS cache + timeout fix
 # ============================================================
 
 import requests
@@ -15,7 +15,9 @@ import whois
 import time
 import csv
 import os
+import threading
 import warnings
+from datetime import datetime
 warnings.filterwarnings("ignore")
 
 # ── Paths ─────────────────────────────────────────────────
@@ -28,19 +30,96 @@ PHISHTANK_DB  = os.path.join(BASE_DIR, "../data/raw/phishtank_db.csv")
 gb_model      = joblib.load(MODEL_PATH)
 feature_names = joblib.load(FEATURES_PATH)
 
-# ── Redirect abuse patterns ───────────────────────────────
+# ── Constants ─────────────────────────────────────────────
 REDIRECT_PATTERNS = [
     '/url?', '/amp/', '/amp/s/', '/amp/a/',
     '/redirect', '/l?', '/link?', '//amp',
     '?url=', '&url=', '?q=', 'shortlink='
 ]
 
-# ── Known shortener services ──────────────────────────────
 SHORTENERS = [
     'bit.ly', 'tinyurl', 'goo.gl', 'ow.ly',
     'cutt.ly', 't.co', 'short.io', 'rb.gy',
     'is.gd', 'buff.ly', 'tiny.cc', 'tr.im'
 ]
+
+CONFIDENCE_THRESHOLD  = 70.0   # above this = PHISHING
+SUSPICIOUS_THRESHOLD  = 60.0   # above this = SUSPICIOUS
+WHOIS_TIMEOUT_SECONDS = 5      # max wait for WHOIS
+
+
+# ============================================================
+# WHOIS CACHE SYSTEM
+# ============================================================
+
+# Global cache dictionary — persists for entire session
+# Key   = domain name (string)
+# Value = whois result object OR None (if lookup failed)
+_whois_cache = {}
+
+def whois_lookup_cached(domain):
+    """
+    Smart WHOIS lookup with two improvements:
+    
+    1. CACHE: If we already looked up this domain this session,
+       return stored result instantly — no network call.
+    
+    2. TIMEOUT: If WHOIS server is slow, give up after 5 seconds
+       instead of hanging forever.
+    
+    Returns whois object if successful, None if failed/timeout.
+    """
+
+    # ── Check cache first ─────────────────────────────────
+    if domain in _whois_cache:
+        # We've seen this domain before — return instantly
+        cached = _whois_cache[domain]
+        return cached  # could be data OR None (failed before)
+
+    # ── Not in cache — do live lookup with timeout ─────────
+    result    = [None]   # list so thread can modify it
+    completed = [False]
+
+    def do_lookup():
+        try:
+            result[0]    = whois.whois(domain)
+            completed[0] = True
+        except Exception:
+            result[0] = None
+            completed[0] = True  # failed but completed
+
+    # Run WHOIS in separate thread
+    thread        = threading.Thread(target=do_lookup)
+    thread.daemon = True   # thread dies if main program exits
+    thread.start()
+    thread.join(timeout=WHOIS_TIMEOUT_SECONDS)
+
+    if not completed[0]:
+        # Thread is still running = timeout occurred
+        return None
+
+    # ── Cache and return the result ────────────────────────
+    if result[0] is not None:
+        _whois_cache[domain] = result[0]
+    
+    return result[0]
+
+
+def get_cache_stats():
+    """
+    Utility function — shows what's in the cache.
+    Useful for debugging and demos.
+    """
+    total    = len(_whois_cache)
+    hits     = sum(1 for v in _whois_cache.values() if v is not None)
+    failures = total - hits
+
+    return {
+        'total_domains_cached': total,
+        'successful_lookups'  : hits,
+        'failed_lookups'      : failures,
+        'cached_domains'      : list(_whois_cache.keys())
+    }
 
 
 # ============================================================
@@ -49,13 +128,13 @@ SHORTENERS = [
 
 def is_valid_short_url(url):
     """
-    Validates the input URL format.
+    Validates basic URL format.
     Returns dict with is_valid flag and error message.
     """
     result = {
         'is_valid'     : False,
         'error_message': None,
-        'url_length'   : len(url)
+        'url_length'   : len(url) if url else 0
     }
 
     if not isinstance(url, str) or not url.strip():
@@ -80,8 +159,8 @@ def is_valid_short_url(url):
 
 def unshorten_url(short_url, timeout=10):
     """
-    Follows all redirects to find the true destination URL.
-    Handles timeouts and connection errors gracefully.
+    Follows all redirects to reveal the true destination URL.
+    Handles timeouts and errors gracefully.
     """
     result = {
         'original_url'  : short_url,
@@ -117,14 +196,14 @@ def unshorten_url(short_url, timeout=10):
 
 
 # ============================================================
-# STEP 3 — PHISHTANK BLACKLIST CHECKER
+# STEP 3 — PHISHTANK CHECKER
 # ============================================================
 
 def check_phishtank(url, db_path=PHISHTANK_DB):
     """
     Checks URL against PhishTank blacklist.
-    Uses smart redirect-abuse detection to avoid false positives
-    on legitimate domains like google.com being abused as redirects.
+    Uses redirect-abuse pattern detection to prevent
+    false positives on legitimate domains.
     """
     result = {
         'checked'    : False,
@@ -146,19 +225,17 @@ def check_phishtank(url, db_path=PHISHTANK_DB):
             for row in reader:
                 phish_url    = row.get('url', '').lower()
                 phish_parsed = urllib.parse.urlparse(phish_url)
-                phish_domain = phish_parsed.netloc.lower().replace('www.', '').strip()
+                phish_domain = (phish_parsed.netloc.lower()
+                                .replace('www.', '').strip())
 
-                # Domains must match exactly
                 if url_domain != phish_domain:
                     continue
 
-                # Check if PhishTank entry is redirect abuse
                 phish_is_redirect = any(
                     p in phish_url for p in REDIRECT_PATTERNS
                 )
 
                 if phish_is_redirect:
-                    # Only flag if our URL also uses redirect
                     our_is_redirect = any(
                         p in url_raw for p in REDIRECT_PATTERNS
                     )
@@ -166,7 +243,6 @@ def check_phishtank(url, db_path=PHISHTANK_DB):
                         result['is_phishing'] = True
                         break
                 else:
-                    # Normal phishing domain
                     result['is_phishing'] = True
                     break
 
@@ -184,8 +260,11 @@ def check_phishtank(url, db_path=PHISHTANK_DB):
 
 def extract_features(url):
     """
-    Extracts 30 features from a URL matching the UCI dataset format.
-    Values: 1=phishing indicator, -1=legitimate, 0=neutral/unknown
+    Extracts all 30 features from a URL.
+    Matches UCI phishing dataset feature format exactly.
+    Values: 1=phishing, -1=legitimate, 0=neutral/unknown
+
+    WHOIS features use cache+timeout system for reliability.
     """
     features = {}
 
@@ -194,98 +273,141 @@ def extract_features(url):
         domain   = parsed.netloc.lower().replace('www.', '')
         full_url = url.lower()
 
-        # 1. IP Address in URL
+        # ── Feature 1: IP Address in URL ──────────────────
         try:
             socket.inet_aton(domain.split(':')[0])
             features['having_IP_Address'] = 1
         except:
             features['having_IP_Address'] = -1
 
-        # 2. URL Length
+        # ── Feature 2: URL Length ──────────────────────────
         url_len = len(url)
-        features['URL_Length'] = -1 if url_len < 54 else (0 if url_len <= 75 else 1)
+        features['URL_Length'] = (
+            -1 if url_len < 54 else (0 if url_len <= 75 else 1)
+        )
 
-        # 3. Shortening Service
-        features['Shortining_Service'] = 1 if any(
-            s in full_url for s in SHORTENERS) else -1
+        # ── Feature 3: Shortening Service ─────────────────
+        features['Shortining_Service'] = (
+            1 if any(s in full_url for s in SHORTENERS) else -1
+        )
 
-        # 4. @ Symbol
+        # ── Feature 4: @ Symbol ───────────────────────────
         features['having_At_Symbol'] = 1 if '@' in url else -1
 
-        # 5. Double Slash Redirect
-        features['double_slash_redirecting'] = 1 if '//' in url[7:] else -1
+        # ── Feature 5: Double Slash Redirect ──────────────
+        features['double_slash_redirecting'] = (
+            1 if '//' in url[7:] else -1
+        )
 
-        # 6. Prefix/Suffix (hyphen in domain)
+        # ── Feature 6: Hyphen in Domain ───────────────────
         features['Prefix_Suffix'] = 1 if '-' in domain else -1
 
-        # 7. Subdomains
+        # ── Feature 7: Subdomain Count ────────────────────
         dot_count = domain.count('.')
         features['having_Sub_Domain'] = (
             -1 if dot_count == 1 else (0 if dot_count == 2 else 1)
         )
 
-        # 8. SSL State
-        features['SSLfinal_State'] = 1 if url.startswith('https://') else -1
+        # ── Feature 8: SSL Certificate ────────────────────
+        features['SSLfinal_State'] = (
+            1 if url.startswith('https://') else -1
+        )
 
-        # 9. Domain Registration Length (WHOIS)
-        try:
-            w        = whois.whois(domain)
-            expiry   = w.expiration_date
-            creation = w.creation_date
-            if isinstance(expiry, list):   expiry   = expiry[0]
-            if isinstance(creation, list): creation = creation[0]
-            if expiry and creation:
-                reg_len = (expiry - creation).days
-                features['Domain_registeration_length'] = -1 if reg_len > 365 else 1
-            else:
-                features['Domain_registeration_length'] = 0
-        except:
-            features['Domain_registeration_length'] = 0
+        # ── Feature 9: Domain Registration Length ─────────
+        # Uses WHOIS cache — fast after first lookup
+        w = whois_lookup_cached(domain)
+        if w:
+            try:
+                expiry   = w.expiration_date
+                creation = w.creation_date
+                if isinstance(expiry, list):   expiry   = expiry[0]
+                if isinstance(creation, list): creation = creation[0]
+                if expiry and creation:
+                    reg_len = (expiry - creation).days
+                    features['Domain_registeration_length'] = (
+                        -1 if reg_len > 365 else 1
+                    )
+                else:
+                    features['Domain_registeration_length'] = (
+                        -1 if len(domain) < 15 else 0
+                    )
+            except:
+                features['Domain_registeration_length'] = (
+                    -1 if len(domain) < 15 else 0
+                )
+        else:
+            # WHOIS failed — use domain length as proxy signal
+            # Short domains (< 15 chars) tend to be legitimate
+            features['Domain_registeration_length'] = (
+                -1 if len(domain) < 15 else 0
+            )
 
-        # 10-16. Page content features (need browser — use neutral)
-        features['Favicon']           = 0
-        features['port']              = -1 if not parsed.port else 1
-        features['HTTPS_token']       = 1 if 'https' in domain else -1
-        features['Request_URL']       = 0
-        features['URL_of_Anchor']     = 0
-        features['Links_in_tags']     = 0
-        features['SFH']               = 0
+        # ── Features 10-16: Page content (need browser) ───
+        features['Favicon']       = 0
+        features['port']          = -1 if not parsed.port else 1
+        features['HTTPS_token']   = 1 if 'https' in domain else -1
+        features['Request_URL']   = 0
+        features['URL_of_Anchor'] = 0
+        features['Links_in_tags'] = 0
+        features['SFH']           = 0
 
-        # 17. Email submission
-        features['Submitting_to_email'] = 1 if 'mailto:' in full_url else -1
+        # ── Feature 17: Email Submission ──────────────────
+        features['Submitting_to_email'] = (
+            1 if 'mailto:' in full_url else -1
+        )
 
-        # 18. Abnormal URL
+        # ── Feature 18: Abnormal URL ──────────────────────
         features['Abnormal_URL'] = -1 if domain in full_url else 1
 
-        # 19-23. JavaScript features (need browser — use neutral)
-        features['Redirect']      = 0
-        features['on_mouseover']  = 0
-        features['RightClick']    = 0
-        features['popUpWidnow']   = 0
-        features['Iframe']        = 0
+        # ── Features 19-23: JS behavior (need browser) ────
+        features['Redirect']     = 0
+        features['on_mouseover'] = 0
+        features['RightClick']   = 0
+        features['popUpWidnow']  = 0
+        features['Iframe']       = 0
 
-        # 24. Domain Age
-        try:
-            w        = whois.whois(domain)
-            creation = w.creation_date
-            if isinstance(creation, list): creation = creation[0]
-            if creation:
-                from datetime import datetime
-                age_days = (datetime.now() - creation).days
-                features['age_of_domain'] = -1 if age_days > 180 else 1
-            else:
-                features['age_of_domain'] = 0
-        except:
-            features['age_of_domain'] = 0
+        # ── Feature 24: Domain Age ─────────────────────────
+        # Reuses same cached WHOIS result — no second lookup!
+        if w:
+            try:
+                creation = w.creation_date
+                if isinstance(creation, list): creation = creation[0]
+                if creation:
+                    age_days = (datetime.now() - creation).days
+                    features['age_of_domain'] = (
+                        -1 if age_days > 180 else 1
+                    )
+                else:
+                    features['age_of_domain'] = (
+                        -1 if domain.count('-') == 0
+                        and len(domain) < 15 else 0
+                    )
+            except:
+                features['age_of_domain'] = (
+                    -1 if domain.count('-') == 0
+                    and len(domain) < 15 else 0
+                )
+        else:
+            # WHOIS failed — use domain signals as proxy
+            # Legitimate domains: short, no hyphens, common TLD
+            legit_signals = sum([
+                len(domain) < 15,
+                domain.count('-') == 0,
+                domain.endswith(('.com', '.org', '.edu', '.gov'))
+            ])
+            features['age_of_domain'] = (
+                -1 if legit_signals >= 2 else
+                (0  if legit_signals == 1 else 1)
+            )
 
-        # 25. DNS Record
+        # ── Feature 25: DNS Record ─────────────────────────
         try:
             socket.gethostbyname(domain.split(':')[0])
             features['DNSRecord'] = -1
         except:
             features['DNSRecord'] = 1
 
-        # 26-30. External service features (need APIs — use neutral)
+        # ── Features 26-30: External APIs (unavailable) ───
         features['web_traffic']            = 0
         features['Page_Rank']              = 0
         features['Google_Index']           = 0
@@ -295,7 +417,6 @@ def extract_features(url):
     except Exception as e:
         pass
 
-    # Return in exact feature order model expects
     return {fname: features.get(fname, 0) for fname in feature_names}
 
 
@@ -305,7 +426,7 @@ def extract_features(url):
 
 def predict_url(features_dict):
     """
-    Runs the saved Gradient Boosting model on extracted features.
+    Runs Gradient Boosting model on extracted features.
     Returns prediction, probabilities and confidence score.
     """
     features_df   = pd.DataFrame([features_dict])[feature_names]
@@ -330,19 +451,15 @@ def predict_url(features_dict):
 
 def check_url(short_url, db_path=PHISHTANK_DB, verbose=True):
     """
-    Master function — runs the complete PSUDPS pipeline:
-      1. Validate URL
-      2. Unshorten URL
-      3. Check PhishTank blacklist
-      4. Extract 30 features
-      5. Run GB model
-      6. Return final verdict
+    Master pipeline function.
+    Runs all steps and returns complete report.
 
-    Confidence threshold: 70%
-    Verdicts: SAFE / SUSPICIOUS / PHISHING / INVALID URL
+    Verdicts:
+      SAFE       — passed all checks
+      SUSPICIOUS — ML flagged 60-70% confidence
+      PHISHING   — blacklist hit OR ML >= 70%
+      INVALID    — bad URL format
     """
-    CONFIDENCE_THRESHOLD = 70.0
-
     if verbose:
         print("\n" + "=" * 60)
         print("PSUDPS — Phishing Short URL Detection System")
@@ -360,7 +477,7 @@ def check_url(short_url, db_path=PHISHTANK_DB, verbose=True):
         'error'           : None
     }
 
-    # ── Step 1: Validate ──────────────────────────────────
+    # Step 1: Validate
     validation = is_valid_short_url(short_url)
     if not validation['is_valid']:
         report['error']         = validation['error_message']
@@ -369,12 +486,16 @@ def check_url(short_url, db_path=PHISHTANK_DB, verbose=True):
             print(f"INVALID: {validation['error_message']}")
         return report
 
-    # ── Step 2: Unshorten ─────────────────────────────────
+    # Step 2: Unshorten
     if verbose: print("\nStep 1: Unshortening URL...")
     unshorten_result = unshorten_url(short_url)
+    redirect_count = 0
+    is_shortened = 1 if any(s in short_url for s in SHORTENERS) else -1
 
     if unshorten_result['success']:
         expanded = unshorten_result['expanded_url']
+        redirect_count = unshorten_result['redirect_count']
+        is_shortened = 1 if any(s in short_url for s in SHORTENERS) else -1        
         if verbose:
             print(f"  Original : {short_url}")
             print(f"  Expanded : {expanded}")
@@ -383,17 +504,17 @@ def check_url(short_url, db_path=PHISHTANK_DB, verbose=True):
         expanded = short_url
         if verbose:
             print(f"  Could not expand: {unshorten_result['error']}")
-            print(f"  Using original URL for analysis")
+            print(f"  Using original URL")
 
     report['expanded_url'] = expanded
 
-    # ── Step 3: PhishTank ─────────────────────────────────
+    # Step 3: PhishTank
     if verbose: print("\nStep 2: Checking PhishTank blacklist...")
     pt_result = check_phishtank(expanded, db_path)
 
     if pt_result.get('error'):
         report['phishtank_result'] = 'UNAVAILABLE'
-        if verbose: print(f"  PhishTank unavailable — using ML only")
+        if verbose: print(f"  PhishTank unavailable")
     elif pt_result['is_phishing']:
         report['phishtank_result'] = 'PHISHING'
         if verbose: print(f"  FOUND IN BLACKLIST")
@@ -401,49 +522,60 @@ def check_url(short_url, db_path=PHISHTANK_DB, verbose=True):
         report['phishtank_result'] = 'SAFE'
         if verbose: print(f"  Not in blacklist")
 
-    # ── Step 4+5: Features + ML ───────────────────────────
+    # Step 4+5: Features + ML
     if verbose: print("\nStep 3: Running ML model...")
     features  = extract_features(expanded)
+    features['redirect_count'] = redirect_count
+    features['is_shortened_input'] = is_shortened
+    
+    report['features'] = features
+
+    if verbose:
+        print("\nFeature Snapshot:")
+        for k, v in features.items():
+            print(f"  {k}: {v}")
+
     ml_result = predict_url(features)
     report['ml_result'] = ml_result
 
     if verbose:
-        print(f"  Phishing probability : {ml_result['phishing_prob']}%")
-        print(f"  Legitimate probability: {ml_result['legitimate_prob']}%")
-        print(f"  Confidence           : {ml_result['confidence']}%")
+        print(f"  Phishing prob  : {ml_result['phishing_prob']}%")
+        print(f"  Legitimate prob: {ml_result['legitimate_prob']}%")
 
-    # ── Step 6: Final Verdict ─────────────────────────────
-    pt_phishing  = report['phishtank_result'] == 'PHISHING'
-    ml_phishing  = (ml_result['is_phishing'] and
-                    ml_result['phishing_prob'] >= CONFIDENCE_THRESHOLD)
+    # Step 6: Final Verdict
+    pt_phishing   = report['phishtank_result'] == 'PHISHING'
+    ml_phishing   = (ml_result['is_phishing'] and
+                     ml_result['phishing_prob'] >= CONFIDENCE_THRESHOLD)
     ml_suspicious = (ml_result['is_phishing'] and
-                     50 <= ml_result['phishing_prob'] < CONFIDENCE_THRESHOLD)
+                     SUSPICIOUS_THRESHOLD <= ml_result['phishing_prob']
+                     < CONFIDENCE_THRESHOLD)
 
     if pt_phishing and ml_phishing:
         report['final_verdict']  = 'PHISHING'
-        report['verdict_reason'] = 'Flagged by BOTH PhishTank and ML model'
+        report['verdict_reason'] = 'Flagged by BOTH PhishTank and ML'
     elif pt_phishing:
         report['final_verdict']  = 'PHISHING'
         report['verdict_reason'] = 'Found in PhishTank blacklist'
     elif ml_phishing:
         report['final_verdict']  = 'PHISHING'
-        report['verdict_reason'] = f'ML confidence {ml_result["phishing_prob"]}% above 70% threshold'
+        report['verdict_reason'] = (f'ML confidence '
+                                    f'{ml_result["phishing_prob"]}% '
+                                    f'above 70% threshold')
     elif ml_suspicious:
         report['final_verdict']  = 'SUSPICIOUS'
-        report['verdict_reason'] = f'ML flagged but low confidence ({ml_result["phishing_prob"]}%) — monitor'
+        report['verdict_reason'] = (f'ML flagged at '
+                                    f'{ml_result["phishing_prob"]}% '
+                                    f'— proceed with caution')
     else:
         report['final_verdict']  = 'SAFE'
         report['verdict_reason'] = 'Passed all checks'
 
     if verbose:
         print("\n" + "=" * 60)
-        verdict = report['final_verdict']
-        if verdict == 'PHISHING':
-            print(f"VERDICT: PHISHING — BLOCKED")
-        elif verdict == 'SUSPICIOUS':
-            print(f"VERDICT: SUSPICIOUS — Proceed with caution")
-        else:
-            print(f"VERDICT: SAFE")
+        v = report['final_verdict']
+        icon = '🚨' if v == 'PHISHING' else ('⚠️' if v == 'SUSPICIOUS'
+                                              else '✅')
+        print(f"{icon} VERDICT: {v}")
         print(f"Reason : {report['verdict_reason']}")
         print("=" * 60)
 
