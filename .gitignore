@@ -12,5 +12,5 @@ build/
 .DS_Store
 Thumbs.db
 data/raw/*.arff
-data/raw/phishtank_db.csv
+# data/raw/phishtank_db.csv
 data/processed/*.csv
