@@ -9,9 +9,8 @@ ENV/
 dist/
 build/
 .ipynb_checkpoints/
-*.pkl
-*.joblib
-data/raw/*.csv
-data/processed/*.csv
 .DS_Store
 Thumbs.db
+data/raw/*.arff
+data/raw/phishtank_db.csv
+data/processed/*.csv

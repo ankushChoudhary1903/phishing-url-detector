@@ -525,8 +525,6 @@ def check_url(short_url, db_path=PHISHTANK_DB, verbose=True):
     # Step 4+5: Features + ML
     if verbose: print("\nStep 3: Running ML model...")
     features  = extract_features(expanded)
-    features['redirect_count'] = redirect_count
-    features['is_shortened_input'] = is_shortened
     
     report['features'] = features
 
