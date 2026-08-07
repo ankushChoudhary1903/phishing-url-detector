@@ -1,5 +1,5 @@
 # ============================================================
-# app.py — PSUDPS Streamlit Web Application
+# app.py — Phishing URL Detection System Streamlit Web Application
 # Phishing Short URL Detection & Prevention System
 # ============================================================
 
@@ -15,8 +15,8 @@ from url_pipeline import check_url, PHISHTANK_DB
 
 # ── Page Configuration ────────────────────────────────────
 st.set_page_config(
-    page_title = "PSUDPS — Phishing URL Detector",
-    page_icon  = "🛡️",
+    page_title = "Phishing URL Detection System — Phishing URL Detector",
+    page_icon  = "️",
     layout     = "centered"
 )
 
@@ -81,11 +81,11 @@ st.markdown("""
 
 # ── Header ────────────────────────────────────────────────
 st.markdown(
-    '<div class="main-title">🛡️ Phishing URL Detector</div>',
+    '<div class="main-title">️ Phishing URL Detector</div>',
     unsafe_allow_html=True
 )
 st.markdown(
-    '<div class="sub-title">Phishing Short URL Detection & Prevention System (PSUDPS)<br>'
+    '<div class="sub-title">Phishing Short URL Detection & Prevention System (Phishing URL Detection System)<br>'
     'Detects phishing attacks hidden behind short URLs using ML + Blacklist</div>',
     unsafe_allow_html=True
 )
@@ -100,7 +100,7 @@ if 'history' not in st.session_state:
 
 
 # ── Input Section ─────────────────────────────────────────
-st.subheader("🔍 Check a URL")
+st.subheader(" Check a URL")
 
 url_input = st.text_input(
     label       = "Enter a short URL or any URL to check:",
@@ -134,7 +134,7 @@ if check_btn:
             )
 
         st.divider()
-        st.subheader("📊 Detection Results")
+        st.subheader(" Detection Results")
 
         # ── Verdict Banner ────────────────────────────────
         verdict = result['final_verdict']
@@ -142,23 +142,23 @@ if check_btn:
         if verdict == 'PHISHING':
             st.markdown(
                 '<div class="verdict-phishing">'
-                '🚨 PHISHING DETECTED — This URL is dangerous!'
+                ' PHISHING DETECTED — This URL is dangerous!'
                 '</div>',
                 unsafe_allow_html=True
             )
         elif verdict == 'SUSPICIOUS':
             st.markdown(
                 '<div class="verdict-suspicious">'
-                '⚠️ SUSPICIOUS — Proceed with extreme caution'
+                ' SUSPICIOUS — Proceed with extreme caution'
                 '</div>',
                 unsafe_allow_html=True
             )
         elif verdict == 'INVALID URL':
-            st.error(f"❌ Invalid URL: {result.get('error', 'Unknown error')}")
+            st.error(f" Invalid URL: {result.get('error', 'Unknown error')}")
         else:
             st.markdown(
                 '<div class="verdict-safe">'
-                '✅ SAFE — This URL appears legitimate'
+                ' SAFE — This URL appears legitimate'
                 '</div>',
                 unsafe_allow_html=True
             )
@@ -184,11 +184,11 @@ if check_btn:
                        unsafe_allow_html=True)
             pt = result.get('phishtank_result', 'N/A')
             if pt == 'PHISHING':
-                st.error(f"🚨 {pt}")
+                st.error(f" {pt}")
             elif pt == 'SAFE':
-                st.success(f"✅ {pt}")
+                st.success(f" {pt}")
             else:
-                st.warning(f"⚠️ {pt}")
+                st.warning(f" {pt}")
 
             st.markdown('<p class="step-label">ML Model Result</p>',
                        unsafe_allow_html=True)
@@ -197,11 +197,11 @@ if check_btn:
                 prob  = ml['phishing_prob']
                 conf  = ml['confidence']
                 if ml['is_phishing'] and prob >= 70:
-                    st.error(f"🚨 Phishing — {prob}% confidence")
+                    st.error(f" Phishing — {prob}% confidence")
                 elif ml['is_phishing']:
-                    st.warning(f"⚠️ Uncertain — {prob}% phishing probability")
+                    st.warning(f" Uncertain — {prob}% phishing probability")
                 else:
-                    st.success(f"✅ Legitimate — {ml['legitimate_prob']}% confidence")
+                    st.success(f" Legitimate — {ml['legitimate_prob']}% confidence")
 
         # ── Confidence Gauge ──────────────────────────────
         if result.get('ml_result'):
@@ -248,7 +248,7 @@ if check_btn:
 # ── History Table ─────────────────────────────────────────
 if st.session_state.history:
     st.divider()
-    st.subheader(f"📋 Session History ({len(st.session_state.history)} URLs checked)")
+    st.subheader(f" Session History ({len(st.session_state.history)} URLs checked)")
 
     history_df = pd.DataFrame(st.session_state.history)
 
@@ -272,7 +272,7 @@ if st.session_state.history:
     st.download_button(
         label     = "Download Results as CSV",
         data      = csv,
-        file_name = "psudps_results.csv",
+        file_name = "Phishing URL Detection System_results.csv",
         mime      = "text/csv"
     )
 
@@ -280,7 +280,7 @@ if st.session_state.history:
 # ── Sidebar Info ──────────────────────────────────────────
 with st.sidebar:
     st.image("https://img.icons8.com/color/96/shield.png", width=80)
-    st.title("About PSUDPS")
+    st.title("About Phishing URL Detection System")
     st.markdown("""
     **Phishing Short URL Detection & Prevention System**
 
@@ -303,9 +303,9 @@ with st.sidebar:
     Gradient Boosting — 95%+ accuracy
 
     **Verdict Levels:**
-    - ✅ SAFE
-    - ⚠️ SUSPICIOUS
-    - 🚨 PHISHING
+    -  SAFE
+    -  SUSPICIOUS
+    -  PHISHING
 
     ---
     **Confidence Threshold:** 70%

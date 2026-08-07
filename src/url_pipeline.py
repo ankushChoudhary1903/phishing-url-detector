@@ -1,6 +1,6 @@
 # ============================================================
 # src/url_pipeline.py
-# PSUDPS — Phishing Short URL Detection & Prevention System
+# Phishing URL Detection System — Phishing Short URL Detection & Prevention System
 # Complete pipeline — with WHOIS cache + timeout fix
 # ============================================================
 
@@ -462,7 +462,7 @@ def check_url(short_url, db_path=PHISHTANK_DB, verbose=True):
     """
     if verbose:
         print("\n" + "=" * 60)
-        print("PSUDPS — Phishing Short URL Detection System")
+        print("Phishing URL Detection System — Phishing Short URL Detection System")
         print("=" * 60)
         print(f"Input : {short_url}")
         print("-" * 60)
@@ -571,8 +571,8 @@ def check_url(short_url, db_path=PHISHTANK_DB, verbose=True):
     if verbose:
         print("\n" + "=" * 60)
         v = report['final_verdict']
-        icon = '🚨' if v == 'PHISHING' else ('⚠️' if v == 'SUSPICIOUS'
-                                              else '✅')
+        icon = '' if v == 'PHISHING' else ('' if v == 'SUSPICIOUS'
+                                              else '')
         print(f"{icon} VERDICT: {v}")
         print(f"Reason : {report['verdict_reason']}")
         print("=" * 60)

@@ -83,13 +83,13 @@ The system returns one of the following classifications:
 
 ## Models Evaluated
 
-| Model | Accuracy |
-|---------|---------|
-| Random Forest | 96.7% |
-| Gradient Boosting | 95.1% |
-| Support Vector Machine | 94.7% |
-| K-Nearest Neighbors | 94.1% |
-| Naive Bayes | 58.3% |
+| Model                  | Accuracy |
+| ---------------------- | -------- |
+| Random Forest          | 96.7%    |
+| Gradient Boosting      | 95.1%    |
+| Support Vector Machine | 94.7%    |
+| K-Nearest Neighbors    | 94.1%    |
+| Naive Bayes            | 58.3%    |
 
 ## Selected Model
 
@@ -106,7 +106,7 @@ AUC Score: 0.9902
 
 Live Demo:
 
-https://psudps-detector.streamlit.app
+https://Phishing URL Detection System-detector.streamlit.app
 
 The application allows users to:
 
